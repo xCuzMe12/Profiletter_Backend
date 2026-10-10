@@ -1,0 +1,42 @@
+# Profiletter Chat API — Fly.io
+# https://fly.io/docs/reference/configuration/
+
+app = "profiletter-backend"
+primary_region = "fra"
+
+[build]
+
+[env]
+  NODE_ENV = "production"
+  HOST = "0.0.0.0"
+  PORT = "8080"
+  LOG_LEVEL = "info"
+  MCP_ENABLED = "true"
+  CRM_WRITE_ENABLED = "false"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [http_service.concurrency]
+    type = "requests"
+    hard_limit = 100
+    soft_limit = 80
+
+  [[http_service.checks]]
+    interval = "15s"
+    timeout = "2s"
+    grace_period = "20s"
+    method = "GET"
+    path = "/health"
+
+[deploy]
+  release_command = "npx prisma migrate deploy"
+
+[[vm]]
+  memory = "512mb"
+  cpu_kind = "shared"
+  cpus = 1
