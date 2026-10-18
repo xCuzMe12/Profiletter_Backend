@@ -10,14 +10,14 @@ import {
 } from "./types.js";
 
 /**
- * MCP gateway stub for Twenty CRM.
- * Read-only tools first. Wire TWENTY_API_URL / TWENTY_API_KEY for live data.
+ * MCP gateway for Atomic CRM (Supabase).
+ * Read-only tools first. Maps contacts → Stranke, deals → Leads.
  */
 export const MCP_TOOL_DEFINITIONS = [
   {
     name: "search_stranke" as const,
     description:
-      "Search Stranke (customers/prospects). Use for finding people by name, email, or free text.",
+      "Search Stranke (customers/prospects stored as contacts). Use for finding people by name, email, or free text.",
     input_schema: {
       type: "object",
       properties: {
@@ -39,7 +39,7 @@ export const MCP_TOOL_DEFINITIONS = [
   {
     name: "search_leads" as const,
     description:
-      "Search Leads (prospective professional-service engagements).",
+      "Search Leads (prospective professional-service engagements stored as deals).",
     input_schema: {
       type: "object",
       properties: {
@@ -94,7 +94,7 @@ const DEMO_LEADS = [
   {
     id: "lead_demo_1",
     title: "Website redesign engagement",
-    stage: "qualified",
+    stage: "proposal-sent",
     strankaId: "stranka_demo_1",
     value: 12000,
     currency: "EUR",
@@ -102,26 +102,62 @@ const DEMO_LEADS = [
   {
     id: "lead_demo_2",
     title: "CRM migration advisory",
-    stage: "discovery",
+    stage: "opportunity",
     strankaId: "stranka_demo_2",
     value: 8500,
     currency: "EUR",
   },
 ];
 
-async function twentyFetch(path: string): Promise<unknown | null> {
-  if (!env.TWENTY_API_URL || !env.TWENTY_API_KEY) return null;
-  const url = `${env.TWENTY_API_URL.replace(/\/$/, "")}${path}`;
+async function supabaseRest<T>(
+  pathAndQuery: string,
+): Promise<T | null> {
+  if (!env.SUPABASE_URL || !env.SUPABASE_SERVICE_ROLE_KEY) return null;
+
+  const url = `${env.SUPABASE_URL.replace(/\/$/, "")}/rest/v1/${pathAndQuery}`;
   const res = await fetch(url, {
     headers: {
-      Authorization: `Bearer ${env.TWENTY_API_KEY}`,
+      apikey: env.SUPABASE_SERVICE_ROLE_KEY,
+      Authorization: `Bearer ${env.SUPABASE_SERVICE_ROLE_KEY}`,
       "Content-Type": "application/json",
+      Prefer: "count=exact",
     },
   });
+
   if (!res.ok) {
-    throw new Error(`Twenty CRM error ${res.status}`);
+    throw new Error(`Supabase CRM error ${res.status}`);
   }
-  return res.json();
+
+  return (await res.json()) as T;
+}
+
+function formatContact(row: Record<string, unknown>) {
+  const first = typeof row.first_name === "string" ? row.first_name : "";
+  const last = typeof row.last_name === "string" ? row.last_name : "";
+  return {
+    id: row.id,
+    name: `${first} ${last}`.trim() || "Unnamed Stranka",
+    first_name: first,
+    last_name: last,
+    email: row.email_jsonb ?? row.email ?? null,
+    title: row.title ?? null,
+    company_id: row.company_id ?? null,
+    status: row.status ?? null,
+    last_seen: row.last_seen ?? null,
+  };
+}
+
+function formatDeal(row: Record<string, unknown>) {
+  return {
+    id: row.id,
+    title: row.name ?? "Untitled Lead",
+    stage: row.stage ?? null,
+    amount: row.amount ?? null,
+    company_id: row.company_id ?? null,
+    contact_ids: row.contact_ids ?? [],
+    expected_closing_date: row.expected_closing_date ?? null,
+    description: row.description ?? null,
+  };
 }
 
 export async function executeMcpTool(
@@ -136,36 +172,72 @@ export async function executeMcpTool(
     switch (name) {
       case "search_stranke": {
         const input = searchStrankeInputSchema.parse(rawInput ?? {});
-        const live = await twentyFetch(
-          `/rest/people?limit=${input.limit}${input.query ? `&filter=${encodeURIComponent(input.query)}` : ""}`,
-        );
-        if (live) return { ok: true, tool: name, data: live };
+        const q = (input.query ?? input.email ?? "").trim();
+        let path = `contacts?select=*&limit=${input.limit}`;
+        if (q) {
+          const encoded = encodeURIComponent(`%${q}%`);
+          path += `&or=(first_name.ilike.${encoded},last_name.ilike.${encoded})`;
+        }
+        const live = await supabaseRest<Record<string, unknown>[]>(path);
+        if (live) {
+          return {
+            ok: true,
+            tool: name,
+            data: {
+              source: "supabase",
+              items: live.map(formatContact),
+            },
+          };
+        }
 
-        const q = (input.query ?? input.email ?? "").toLowerCase();
+        const needle = q.toLowerCase();
         const data = DEMO_STRANKE.filter((s) => {
-          if (!q) return true;
+          if (!needle) return true;
           return (
-            s.name.toLowerCase().includes(q) ||
-            s.email.toLowerCase().includes(q) ||
-            s.company.toLowerCase().includes(q)
+            s.name.toLowerCase().includes(needle) ||
+            s.email.toLowerCase().includes(needle) ||
+            s.company.toLowerCase().includes(needle)
           );
         }).slice(0, input.limit);
         return { ok: true, tool: name, data: { source: "demo", items: data } };
       }
       case "get_stranka": {
         const input = getStrankaInputSchema.parse(rawInput);
-        const live = await twentyFetch(`/rest/people/${input.id}`);
-        if (live) return { ok: true, tool: name, data: live };
+        const live = await supabaseRest<Record<string, unknown>[]>(
+          `contacts?id=eq.${encodeURIComponent(input.id)}&select=*&limit=1`,
+        );
+        if (live) {
+          if (!live[0]) return { ok: false, tool: name, error: "Stranka not found" };
+          return {
+            ok: true,
+            tool: name,
+            data: { source: "supabase", item: formatContact(live[0]) },
+          };
+        }
         const item = DEMO_STRANKE.find((s) => s.id === input.id);
         if (!item) return { ok: false, tool: name, error: "Stranka not found" };
         return { ok: true, tool: name, data: { source: "demo", item } };
       }
       case "search_leads": {
         const input = searchLeadsInputSchema.parse(rawInput ?? {});
-        const live = await twentyFetch(
-          `/rest/opportunities?limit=${input.limit}${input.query ? `&filter=${encodeURIComponent(input.query)}` : ""}`,
-        );
-        if (live) return { ok: true, tool: name, data: live };
+        let path = `deals?select=*&archived_at=is.null&limit=${input.limit}`;
+        if (input.stage) {
+          path += `&stage=eq.${encodeURIComponent(input.stage)}`;
+        }
+        if (input.query) {
+          path += `&name=ilike.${encodeURIComponent(`%${input.query}%`)}`;
+        }
+        const live = await supabaseRest<Record<string, unknown>[]>(path);
+        if (live) {
+          let items = live.map(formatDeal);
+          if (input.strankaId) {
+            items = items.filter((d) => {
+              const ids = Array.isArray(d.contact_ids) ? d.contact_ids : [];
+              return ids.map(String).includes(input.strankaId!);
+            });
+          }
+          return { ok: true, tool: name, data: { source: "supabase", items } };
+        }
 
         const q = (input.query ?? "").toLowerCase();
         const data = DEMO_LEADS.filter((l) => {
@@ -178,8 +250,17 @@ export async function executeMcpTool(
       }
       case "get_lead": {
         const input = getLeadInputSchema.parse(rawInput);
-        const live = await twentyFetch(`/rest/opportunities/${input.id}`);
-        if (live) return { ok: true, tool: name, data: live };
+        const live = await supabaseRest<Record<string, unknown>[]>(
+          `deals?id=eq.${encodeURIComponent(input.id)}&select=*&limit=1`,
+        );
+        if (live) {
+          if (!live[0]) return { ok: false, tool: name, error: "Lead not found" };
+          return {
+            ok: true,
+            tool: name,
+            data: { source: "supabase", item: formatDeal(live[0]) },
+          };
+        }
         const item = DEMO_LEADS.find((l) => l.id === input.id);
         if (!item) return { ok: false, tool: name, error: "Lead not found" };
         return { ok: true, tool: name, data: { source: "demo", item } };
@@ -187,17 +268,36 @@ export async function executeMcpTool(
       case "aggregate_crm": {
         const input = aggregateInputSchema.parse(rawInput);
         if (input.entity === "stranke") {
+          const live = await supabaseRest<Record<string, unknown>[]>(
+            "contacts?select=id&limit=1000",
+          );
           return {
             ok: true,
             tool: name,
             data: {
-              source: env.TWENTY_API_URL ? "twenty" : "demo",
+              source: live ? "supabase" : "demo",
               entity: "stranke",
-              count: DEMO_STRANKE.length,
-              byStatus: {
-                active: DEMO_STRANKE.filter((s) => s.status === "active").length,
-                prospect: DEMO_STRANKE.filter((s) => s.status === "prospect").length,
-              },
+              count: live ? live.length : DEMO_STRANKE.length,
+            },
+          };
+        }
+        const live = await supabaseRest<Record<string, unknown>[]>(
+          "deals?select=id,stage&archived_at=is.null&limit=1000",
+        );
+        if (live) {
+          const byStage: Record<string, number> = {};
+          for (const row of live) {
+            const stage = String(row.stage ?? "unknown");
+            byStage[stage] = (byStage[stage] ?? 0) + 1;
+          }
+          return {
+            ok: true,
+            tool: name,
+            data: {
+              source: "supabase",
+              entity: "leads",
+              count: live.length,
+              byStage,
             },
           };
         }
@@ -205,12 +305,13 @@ export async function executeMcpTool(
           ok: true,
           tool: name,
           data: {
-            source: env.TWENTY_API_URL ? "twenty" : "demo",
+            source: "demo",
             entity: "leads",
             count: DEMO_LEADS.length,
             byStage: {
-              discovery: DEMO_LEADS.filter((l) => l.stage === "discovery").length,
-              qualified: DEMO_LEADS.filter((l) => l.stage === "qualified").length,
+              opportunity: DEMO_LEADS.filter((l) => l.stage === "opportunity").length,
+              "proposal-sent": DEMO_LEADS.filter((l) => l.stage === "proposal-sent")
+                .length,
             },
           },
         };

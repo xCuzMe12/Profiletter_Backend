@@ -33,6 +33,9 @@ export const healthRoutes: FastifyPluginAsync = async (app) => {
         backupDatabaseConfigured: backupDbConfigured,
         redis: redisOk,
         anthropicConfigured: Boolean(env.ANTHROPIC_API_KEY),
+        supabaseConfigured: Boolean(
+          env.SUPABASE_URL && env.SUPABASE_SERVICE_ROLE_KEY,
+        ),
         mcpEnabled: env.MCP_ENABLED,
         crmWriteEnabled: env.CRM_WRITE_ENABLED,
       },

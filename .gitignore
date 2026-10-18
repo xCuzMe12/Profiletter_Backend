@@ -1,14 +1,20 @@
 # dependencies
 node_modules/
+web/node_modules/
 
 # build
 dist/
+web/dist/
 *.tsbuildinfo
 
 # env / secrets
 .env
 .env.local
 .env.*.local
+web/.env
+web/.env.local
+web/.env.production.local
+# Keep web/.env.development / .env.e2e only if they contain local public keys (no service role)
 
 # logs / runtime
 logs/

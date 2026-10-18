@@ -10,7 +10,7 @@ const envSchema = z.object({
   LOG_LEVEL: z
     .enum(["fatal", "error", "warn", "info", "debug", "trace", "silent"])
     .default("info"),
-  CORS_ORIGIN: z.string().default("http://localhost:3000"),
+  CORS_ORIGIN: z.string().default("http://localhost:5173"),
 
   JWT_SECRET: z.string().min(16),
   JWT_EXPIRES_IN: z.string().default("7d"),
@@ -26,8 +26,11 @@ const envSchema = z.object({
   CLAUDE_MODEL: z.string().default("claude-sonnet-4-20250514"),
   CLAUDE_MAX_TOKENS: z.coerce.number().int().positive().default(4096),
 
-  TWENTY_API_URL: z.string().optional(),
-  TWENTY_API_KEY: z.string().optional(),
+  // Atomic CRM / Supabase (system of record for Stranke + Leads)
+  SUPABASE_URL: z.string().optional(),
+  SUPABASE_SERVICE_ROLE_KEY: z.string().optional(),
+  SUPABASE_JWT_SECRET: z.string().optional(),
+
   MCP_ENABLED: z
     .string()
     .default("true")

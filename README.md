@@ -1,126 +1,90 @@
-# Profiletter Backend
+# Profiletter
 
-API server for **Profiletter Chat** — a Claude-powered CRM assistant with MCP access to **Stranke** and **Leads**.
+CRM + AI chat product built on **Atomic CRM** (React / Supabase) with a **Profiletter Chat API** (Fastify / Claude).
 
-This repo is the **backend only** (Fly.io). The web UI lives in a separate frontend project.
-
-## Stack
-
-- Node.js 20+ / TypeScript
-- Fastify
-- PostgreSQL + Prisma (primary DB on Fly; Supabase URL reserved as backup)
-- Redis (rate limit / cache / future jobs)
-- Anthropic Claude API
-- MCP-style CRM tool gateway (Twenty CRM)
-- JWT auth + audit logging
-- SSE streaming chat (`POST /chat`)
+```text
+Browser → Atomic CRM UI (web/) → Supabase (Stranke/Leads)
+                │
+                └── Profiletter Chat (/chat) → API (src/) → Claude + MCP → Supabase
+```
 
 ## Terminology
 
-| Internal | User-facing |
+| Atomic table | User-facing label |
 |---|---|
-| People records | Stranke / Stranka |
-| Opportunities | Leads / Lead |
+| `contacts` | Stranke / Stranka |
+| `deals` | Leads / Lead |
 | Assistant | Profiletter Chat |
 
-Do not expose labels like People, Persons, Opportunities in API messages or prompts.
+## Structure
 
-## Quick start (local)
+```text
+Profiletter_Backend/
+  src/                 Fastify API — auth, conversations, Claude, MCP
+  prisma/              Chat users / conversations DB
+  web/                 Atomic CRM frontend (Vite) + Chat page
+  Dockerfile           API image for Fly.io
+  fly.toml
+```
+
+## Prerequisites
+
+- Node 20+ (Node 24 recommended for Atomic)
+- Docker (local Supabase)
+- Make (for Atomic `make install` / `make start`)
+
+## 1. Chat API
 
 ```bash
 cp .env.example .env
-# edit JWT_SECRET, DATABASE_URL, ANTHROPIC_API_KEY, etc.
+# set JWT_SECRET, DATABASE_URL, ANTHROPIC_API_KEY
+# set SUPABASE_* from `cd web && npx supabase status`
 
-docker compose up -d
+docker compose up -d          # optional local Postgres + Redis
 npm install
 npx prisma migrate deploy
-npm run dev
+npm run dev                   # http://localhost:8080
 ```
 
-API: `http://localhost:8080`
+Accepts Profiletter JWTs **or** Supabase access tokens (`SUPABASE_JWT_SECRET`).
 
-### Bootstrap admin
-
-Set in `.env`:
-
-```env
-BOOTSTRAP_ADMIN_EMAIL=admin@profiletter.local
-BOOTSTRAP_ADMIN_PASSWORD=change-me-strong
-```
-
-Then:
+## 2. Atomic CRM UI
 
 ```bash
-curl -X POST http://localhost:8080/auth/login \
-  -H "Content-Type: application/json" \
-  -d '{"email":"admin@profiletter.local","password":"change-me-strong"}'
+cd web
+make install                  # or npm install + npx supabase start
+# ensure .env.development has VITE_PROFILETTER_API_URL=http://localhost:8080
+npm run dev                   # http://localhost:5173
 ```
 
-## Main endpoints
+Or from `web/`:
 
-| Method | Path | Auth | Description |
-|---|---|---|---|
-| GET | `/health` | no | Liveness |
-| GET | `/ready` | no | DB / Redis / config readiness |
-| POST | `/auth/login` | no | JWT login |
-| GET | `/auth/me` | yes | Current user |
-| GET | `/conversations` | yes | List chats |
-| POST | `/conversations` | yes | Create chat |
-| GET | `/conversations/:id` | yes | Chat + messages |
-| DELETE | `/conversations/:id` | yes | Archive chat |
-| POST | `/chat` | yes | Send message (SSE stream) |
+```bash
+make start
+```
 
-### Chat SSE events
+Sign up as the first user, then open **Chat** in the top nav.
 
-`meta`, `text_delta`, `tool_call`, `tool_result`, `done`, `error`
+## MCP / CRM tools
 
-## CRM tools (read-only v1)
+Read-only tools against Supabase:
 
-MCP gateway tools:
-
-- `search_stranke` / `get_stranka`
-- `search_leads` / `get_lead`
+- `search_stranke` / `get_stranka` → `contacts`
+- `search_leads` / `get_lead` → `deals`
 - `aggregate_crm`
 
-Without `TWENTY_API_URL` + `TWENTY_API_KEY`, demo CRM data is returned so the tool loop can be tested end-to-end.  
-`CRM_WRITE_ENABLED=false` by default.
+Without `SUPABASE_URL` + `SUPABASE_SERVICE_ROLE_KEY`, demo data is returned.
 
-## Database
+## Deploy
 
-- **Primary:** `DATABASE_URL` (Fly Postgres recommended)
-- **Backup (optional):** `BACKUP_DATABASE_URL` (e.g. Supabase) — currently reported in `/ready`; failover wiring is future work
+| Piece | Target |
+|---|---|
+| API | Fly.io (`fly deploy`) |
+| CRM UI | GitHub Pages / static host / your CDN (`cd web && make prod-deploy`) |
+| CRM data | Supabase |
+| Chat DB | Fly Postgres (or managed Postgres) |
 
-## Deploy to Fly.io
+## Notes
 
-```bash
-fly launch   # or use existing fly.toml
-fly secrets set \
-  JWT_SECRET=... \
-  DATABASE_URL=... \
-  REDIS_URL=... \
-  ANTHROPIC_API_KEY=... \
-  CORS_ORIGIN=https://your-frontend.example
-fly deploy
-```
-
-`fly.toml` runs `prisma migrate deploy` as the release command and health-checks `/health`.
-
-## Project layout
-
-```text
-src/
-  ai/           Claude + system prompt
-  auth/         JWT + middleware
-  config/       env (Zod)
-  lib/          prisma, redis, errors
-  mcp/          CRM tool gateway
-  routes/       HTTP API
-  services/     conversations, audit
-prisma/         schema + migrations
-Dockerfile      Fly image
-fly.toml        Fly app config
-```
-
-## v1 scope
-
-Prioritize reliable **read-only** Stranke / Leads queries. Write actions, workflows, and dashboards come later.
+- The standalone Next.js app in `../profiletter-chat` is superseded by `web/` Chat.
+- Twenty CRM integration was removed in favor of Atomic + Supabase.

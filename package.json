@@ -9,7 +9,9 @@
   },
   "scripts": {
     "dev": "tsx watch src/index.ts",
+    "dev:web": "npm --prefix web run dev",
     "build": "tsc -p tsconfig.json",
+    "build:web": "npm --prefix web run build",
     "start": "node dist/index.js",
     "lint": "tsc -p tsconfig.json --noEmit",
     "db:generate": "prisma generate",
